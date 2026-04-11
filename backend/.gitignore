@@ -1,0 +1,59 @@
+echo "# Environments
+venv/
+env/
+.venv/
+Pipfile.lock
+
+# Secrets and Configs
+.env
+*.pem
+secrets.json
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs and Databases
+*.log
+*.sqlite3
+db.sqlite3
+
+# Test Runner and Coverage
+.coverage
+.tox/
+htmlcov/
+.pytest_cache/
+" > .gitignore
