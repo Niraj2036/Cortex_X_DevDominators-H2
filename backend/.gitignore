@@ -1,4 +1,4 @@
-echo "# Environments
+# Environments
 venv/
 env/
 .venv/
@@ -56,4 +56,6 @@ db.sqlite3
 .tox/
 htmlcov/
 .pytest_cache/
-" > .gitignore
+
+# Uploads
+uploads/
