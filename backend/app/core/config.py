@@ -100,6 +100,16 @@ class Settings(BaseSettings):
         description="Adjusted confidence needed to reach consensus",
     )
 
+    # ── Database ─────────────────────────────────────────────────────
+    mongo_uri: str = Field(
+        "",
+        description="MongoDB connection string (e.g., mongodb+srv://...)"
+    )
+    mongo_db_name: str = Field(
+        "omni_cortex", 
+        description="Database name inside MongoDB Atlas"
+    )
+
     # ── CORS ─────────────────────────────────────────────────────────
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:3000", "http://localhost:5173"],

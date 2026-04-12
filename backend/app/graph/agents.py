@@ -68,6 +68,7 @@ from app.graph.state import (
     Urgency,
     WorkflowPhase,
 )
+from app.services.atlas_service import store_case
 from app.graph.tools import execute_tool_calls_batch
 
 logger = get_logger(__name__)
@@ -1097,6 +1098,18 @@ async def scribe_node(state: dict[str, Any]) -> dict[str, Any]:
         },
         "final_diagnosis": diagnosis_result.model_dump(),
     }
+
+    # Store finalized transcript and vectors into MongoDB fully async
+    try:
+        await store_case(
+            session_id=s.session_id,
+            request_id=s.request_id,
+            final_diagnosis=diagnosis_result.primary_diagnosis,
+            confidence=diagnosis_result.confidence_pct,
+            audit_trail=audit_trail,
+        )
+    except Exception as e:
+        logger.error(f"MongoDB dual-write failed non-fatally: {e}")
 
     events = [
         {

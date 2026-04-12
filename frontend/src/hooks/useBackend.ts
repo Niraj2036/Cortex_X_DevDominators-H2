@@ -136,6 +136,29 @@ export function useDebateSocket() {
           case "triage_complete": {
             const hypotheses = (raw.data?.hypotheses as typeof useCortexStore.getState extends () => infer S ? S extends { hypotheses: infer H } ? H : never : never) || [];
             setHypotheses(hypotheses);
+            // Pre-seed scores from triage
+            const initialScores: Record<string, number> = {};
+            hypotheses.forEach((h: any) => {
+              if (h.diagnosis && h.confidence !== undefined) {
+                initialScores[h.diagnosis] = Math.round(h.confidence * 100);
+              }
+            });
+            updateScores(initialScores);
+            break;
+          }
+
+          case "peer_rating_complete": {
+            const rawScores = raw.advocate_scores as Record<string, number> | undefined;
+            if (rawScores) {
+              const mappedScores: Record<string, number> = {};
+              for (const [id, score] of Object.entries(rawScores)) {
+                // Extract diagnosis from advocate_0_DiagnosisName
+                const parts = id.split("_", 3);
+                const diag = parts.length > 2 ? parts.slice(2).join("_") : id;
+                mappedScores[diag] = Math.round((Math.max(0, Math.min(10, score))) * 10);
+              }
+              useCortexStore.getState().updateScores(mappedScores);
+            }
             break;
           }
 

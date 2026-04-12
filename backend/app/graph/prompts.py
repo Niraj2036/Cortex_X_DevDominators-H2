@@ -76,6 +76,7 @@ def triage_system_prompt() -> str:
         "3. List 3–8 hypotheses, ranked by confidence.\n"
         "4. Consider rare but dangerous differentials.\n"
         "5. Flag any missing data that would change your ranking.\n"
+        "6. CRITICAL: ENSURE ALL HYPOTHESES ARE DISTINCT AND UNIQUE. Do not output synonymous or overlapping diagnoses (e.g. 'Acute MI' and 'STEMI'). Consolidate them.\n"
     )
 
 

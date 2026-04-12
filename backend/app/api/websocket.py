@@ -468,6 +468,7 @@ async def websocket_diagnosis(ws: WebSocket) -> None:
         # ── 4. Run workflow with streaming ───────────────────────
         workflow = compile_workflow()
         sent_transcript_count = 0
+        sent_events_count = 0
 
         # Map node names to agent roles for typing indicators
         _NODE_TO_AGENT = {
@@ -479,6 +480,8 @@ async def websocket_diagnosis(ws: WebSocket) -> None:
             "cortex": ("cortex", "Cortex Engine"),
             "scribe": ("scribe", "Medical Scribe"),
         }
+
+        transcript_buffer = []
 
         async for chunk in workflow.astream(initial_state):
             for node_name, node_state in chunk.items():
@@ -492,22 +495,45 @@ async def websocket_diagnosis(ws: WebSocket) -> None:
                 # ── A) Convert new transcript entries to chat ────
                 transcript = node_state.get("debate_transcript", [])
                 new_entries = transcript[sent_transcript_count:]
+                
+                parsed_entries = []
                 for entry_obj in new_entries:
-                    entry = (
-                        entry_obj
-                        if isinstance(entry_obj, dict)
-                        else entry_obj.model_dump()
-                        if hasattr(entry_obj, "model_dump")
+                    parsed_entries.append(
+                        entry_obj if isinstance(entry_obj, dict)
+                        else entry_obj.model_dump() if hasattr(entry_obj, "model_dump")
                         else {}
                     )
-                    chat_msg = _transcript_entry_to_chat(entry, session_id)
-                    if chat_msg:
-                        await _safe_send(ws, chat_msg)
-                sent_transcript_count = len(transcript)
+
+                if node_name == "advocate_round":
+                    # Buffer advocates and wait for skeptics to pair them
+                    transcript_buffer.extend(parsed_entries)
+                    sent_transcript_count = len(transcript)
+                elif node_name == "skeptic":
+                    # Intertwine advocates and skeptics
+                    interleaved = []
+                    for i in range(max(len(transcript_buffer), len(parsed_entries))):
+                        if i < len(transcript_buffer): interleaved.append(transcript_buffer[i])
+                        if i < len(parsed_entries): interleaved.append(parsed_entries[i])
+                    
+                    for entry in interleaved:
+                        chat_msg = _transcript_entry_to_chat(entry, session_id)
+                        if chat_msg:
+                            await _safe_send(ws, chat_msg)
+                            
+                    transcript_buffer = []
+                    sent_transcript_count = len(transcript)
+                else:
+                    # Normal processing
+                    for entry in parsed_entries:
+                        chat_msg = _transcript_entry_to_chat(entry, session_id)
+                        if chat_msg:
+                            await _safe_send(ws, chat_msg)
+                    sent_transcript_count = len(transcript)
 
                 # ── B) Convert pending events to chat ────────────
                 events = node_state.get("pending_events", [])
-                for event in events:
+                new_events = events[sent_events_count:]
+                for event in new_events:
                     event["session_id"] = session_id
                     # Send the raw event (for structured data consumers)
                     await _safe_send(ws, event)
@@ -515,6 +541,7 @@ async def websocket_diagnosis(ws: WebSocket) -> None:
                     chat_msg = _event_to_chat(event, session_id)
                     if chat_msg:
                         await _safe_send(ws, chat_msg)
+                sent_events_count = len(events)
 
                 # ── C) Send typing indicator for NEXT node ───────
                 # Peek at what comes next based on current phase

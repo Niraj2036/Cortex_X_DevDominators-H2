@@ -137,18 +137,37 @@ function getAgent(id: string, name?: string, role?: string): AgentDisplay {
 
 function AgentSidebar() {
   const activeAgent = useCortexStore((s) => s.activeAgent);
+  const messages = useCortexStore((s) => s.debateMessages);
+
+  // Dynamically compile active agents from the chat feed
+  const seenIds = new Set<string>();
+  const dynamicAgents: ReturnType<typeof getAgent>[] = [];
+
+  // Always keep Cortex and Triage explicitly at the top
+  dynamicAgents.push(getAgent("cortex"));
+  dynamicAgents.push(getAgent("triage"));
+  seenIds.add("cortex");
+  seenIds.add("triage");
+
+  for (const m of messages) {
+    const mId = m.agent_id || "system";
+    if (mId === "system" || seenIds.has(mId)) continue;
+    seenIds.add(mId);
+    dynamicAgents.push(getAgent(mId, (m as any).agent_name, (m as any).agent_role));
+  }
 
   return (
     <div className="flex w-64 shrink-0 flex-col border-r border-slate-800/60 bg-slate-950/50 p-4">
       <h3 className="mb-4 text-xs font-semibold uppercase tracking-wider text-slate-500">
         Active Agents
       </h3>
-      <div className="space-y-2">
-        {AGENTS.map((agent) => {
+      <div className="space-y-2 overflow-y-auto custom-scrollbar pr-1 pb-4">
+        {dynamicAgents.map((agent) => {
           const isActive = activeAgent === agent.id;
           const Icon = agent.icon;
           return (
             <motion.div
+              layout
               key={agent.id}
               animate={isActive ? { scale: [1, 1.02, 1] } : {}}
               transition={isActive ? { repeat: Infinity, duration: 2 } : {}}
@@ -327,39 +346,28 @@ function MessageBubble({
 
 function ScoreSidebar() {
   const scores = useCortexStore((s) => s.scores);
-  const missingData = useCortexStore((s) => s.missingData);
-
   const scoreEntries = Object.entries(scores).sort((a, b) => b[1] - a[1]);
 
-  const SCORE_COLORS: Record<string, { bar: string; text: string }> = {
-    cardiac: { bar: "bg-cyan-500", text: "text-cyan-400" },
-    pulmonary: { bar: "bg-blue-500", text: "text-blue-400" },
-    gi: { bar: "bg-violet-500", text: "text-violet-400" },
-  };
-
-  const overallUncertainty =
-    missingData.length === 0
-      ? "Low"
-      : missingData.length <= 2
-      ? "Medium"
-      : "High";
-  const uncertaintyColor =
-    overallUncertainty === "Low"
-      ? "text-emerald-400"
-      : overallUncertainty === "Medium"
-      ? "text-amber-400"
-      : "text-red-400";
+  const DYNAMIC_BAR_COLORS = [
+    { bar: "bg-cyan-500", text: "text-cyan-400" },
+    { bar: "bg-emerald-500", text: "text-emerald-400" },
+    { bar: "bg-blue-500", text: "text-blue-400" },
+    { bar: "bg-violet-500", text: "text-violet-400" },
+    { bar: "bg-fuchsia-500", text: "text-fuchsia-400" },
+    { bar: "bg-amber-500", text: "text-amber-400" },
+    { bar: "bg-rose-500", text: "text-rose-400" },
+  ];
 
   return (
     <div className="flex w-72 shrink-0 flex-col border-l border-slate-800/60 bg-slate-950/50 p-4">
       {/* Live Scores */}
       <h3 className="mb-4 text-xs font-semibold uppercase tracking-wider text-slate-500">
-        Live Scores
+        Round-wise Peer Ratings
       </h3>
 
       <div className="space-y-4">
-        {scoreEntries.map(([key, value]) => {
-          const colors = SCORE_COLORS[key] || { bar: "bg-slate-500", text: "text-slate-400" };
+        {scoreEntries.map(([key, value], idx) => {
+          const colors = DYNAMIC_BAR_COLORS[idx % DYNAMIC_BAR_COLORS.length];
           const label = key.charAt(0).toUpperCase() + key.slice(1);
           return (
             <div key={key}>
@@ -392,52 +400,6 @@ function ScoreSidebar() {
             Scores will appear as agents debate...
           </p>
         )}
-      </div>
-
-      {/* Uncertainty Gauge */}
-      <div className="mt-8">
-        <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
-          Uncertainty Gauge
-        </h3>
-
-        <div className={`rounded-xl border border-slate-700/50 bg-slate-900/40 p-4`}>
-          <div className="flex items-center gap-2 mb-3">
-            <AlertTriangle className={`h-4 w-4 ${uncertaintyColor}`} />
-            <span className={`text-sm font-semibold ${uncertaintyColor}`}>
-              {overallUncertainty} Uncertainty
-            </span>
-          </div>
-
-          {missingData.length === 0 ? (
-            <p className="text-xs text-slate-500">No critical data gaps identified.</p>
-          ) : (
-            <div className="space-y-2">
-              {missingData.map((item, i) => (
-                <motion.div
-                  key={i}
-                  initial={{ opacity: 0, x: -5 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: i * 0.1 }}
-                  className="flex items-start gap-2 text-xs"
-                >
-                  <div className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${
-                    item.urgency === "high" || item.urgency === "critical"
-                      ? "bg-red-400"
-                      : item.urgency === "medium"
-                      ? "bg-amber-400"
-                      : "bg-slate-500"
-                  }`} />
-                  <div>
-                    <span className="font-medium text-slate-300">
-                      {item.test_name}
-                    </span>
-                    <p className="mt-0.5 text-slate-500">{item.reason}</p>
-                  </div>
-                </motion.div>
-              ))}
-            </div>
-          )}
-        </div>
       </div>
     </div>
   );

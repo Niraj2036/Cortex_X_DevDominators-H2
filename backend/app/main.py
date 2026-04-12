@@ -37,6 +37,8 @@ logger = get_logger(__name__)
 # ── Lifespan ─────────────────────────────────────────────────────────
 
 
+from app.db.mongodb import init_db, close_db
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application startup / shutdown lifecycle."""
@@ -54,7 +56,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         total_budget=len(settings.featherless_api_keys) * settings.featherless_budget_per_key,
         triage_models=len(settings.triage_models),
     )
+    
+    await init_db()
+    
     yield
+    
+    close_db()
     logger.info("app_shutdown")
 
 
@@ -113,6 +120,9 @@ def create_app() -> FastAPI:
     # ── Routes ──────────────────────────────────────────────────
     app.include_router(diagnosis_router)
     app.include_router(ws_router)
+    
+    from app.api.atlas_routes import router as atlas_router
+    app.include_router(atlas_router)
 
     return app
 
