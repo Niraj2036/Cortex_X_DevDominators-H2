@@ -64,7 +64,7 @@ class Settings(BaseSettings):
         default_factory=lambda: [
             "deepseek-ai/DeepSeek-V3.2",
             "Qwen/Qwen2.5-72B-Instruct",
-            "moonshotai/Kimi-K2-Instruct-0905",
+            "deepseek-ai/DeepSeek-V3-0324",
         ],
         description="Models that cost 4 concurrency units per request",
     )
@@ -112,10 +112,10 @@ class Settings(BaseSettings):
     # ── Triage model roster ──────────────────────────────────────────
     triage_models: list[str] = Field(
         default_factory=lambda: [
-            "moonshotai/Kimi-K2.5",
+            "deepseek-ai/DeepSeek-V3-0324",
             "google/gemma-4-31B-it",
             "Qwen/Qwen2.5-72B-Instruct",
-            "moonshotai/Kimi-K2-Instruct-0905",
+            "deepseek-ai/DeepSeek-V3.2",
             "Qwen/Qwen3-32B",
             "google/gemma-4-26B-A4B",
         ],

@@ -412,101 +412,141 @@ async def advocate_round_node(state: dict[str, Any]) -> dict[str, Any]:
 
 async def skeptic_node(state: dict[str, Any]) -> dict[str, Any]:
     """
-    Sceptical critique of all advocate arguments.
+    Sceptical critique of all advocate arguments. (1-to-1 Mapping)
 
-    • Identifies contradictions
-    • Detects hallucinations
-    • VERIFIES SOURCE CREDIBILITY of cited evidence
-    • Assigns uncertainty penalties
-    • Detects missing clinical tests
+    • Spawns independent concurrent Skeptic tasks for each active Advocate.
+    • Identifies contradictions and hallucinated claims against specific diagnoses.
+    • VERIFIES SOURCE CREDIBILITY
+    • Assigns targeted uncertainty penalties.
     """
     s = OmniState.model_validate(state)
+    eliminated_set = set(s.eliminated_advocates)
 
-    hyp_dicts = [
-        h.model_dump() if isinstance(h, Hypothesis) else h
-        for h in s.active_hypotheses
-    ]
     transcript_dicts = [
         e.model_dump() if isinstance(e, DebateEntry) else e
         for e in s.debate_transcript
     ]
 
-    result = await featherless_chat_json(
-        messages=[
-            {"role": "system", "content": skeptic_system_prompt()},
-            {
-                "role": "user",
-                "content": skeptic_user_prompt(
-                    hyp_dicts, transcript_dicts, s.patient_data
-                ),
-            },
-        ],
-        temperature=0.3,
-        max_tokens=2048,
-    )
+    active_diagnoses = [
+        h.diagnosis if isinstance(h, Hypothesis) else h["diagnosis"]
+        for h in s.active_hypotheses
+    ]
 
-    if not isinstance(result, dict):
-        result = {"raw": result}
+    tasks = []
+    
+    for i, diag in enumerate(active_diagnoses):
+        agent_id = f"advocate_{i}_{diag[:20]}"
+        if agent_id in eliminated_set:
+            continue
+            
+        # Extract the specific argument this advocate JUST made
+        adv_content = {}
+        for entry in reversed(transcript_dicts):
+            if entry.get("agent_id") == agent_id and entry.get("round_number") == s.current_round:
+                raw_c = entry.get("content", "{}")
+                if isinstance(raw_c, str):
+                    try:
+                        adv_content = json.loads(raw_c)
+                    except:
+                        adv_content = {"raw": raw_c}
+                else:
+                    adv_content = raw_c
+                break
 
-    # Execute any tool requests from skeptic (for source verification)
-    tool_results: list[dict[str, Any]] = []
-    tool_requests = result.get("tool_requests", [])
-    if tool_requests:
-        tool_outputs = await execute_tool_calls_batch(tool_requests)
-        tool_results = [t.model_dump() for t in tool_outputs]
+        skeptic_id = f"skeptic_{i}_{diag[:20]}"
+        
+        coro = featherless_chat_json(
+            messages=[
+                {"role": "system", "content": skeptic_system_prompt()},
+                {
+                    "role": "user",
+                    "content": skeptic_user_prompt(
+                        diag, adv_content, transcript_dicts, s.patient_data
+                    ),
+                },
+            ],
+            temperature=0.3,
+            max_tokens=2048,
+        )
+        tasks.append((diag, skeptic_id, coro))
 
-    # Apply uncertainty penalties
-    penalties = dict(s.uncertainty_penalties)
-    new_penalties = result.get("uncertainty_penalties", {})
-    for diag, penalty in new_penalties.items():
-        current = penalties.get(diag, 0.0)
-        penalties[diag] = round(current + float(penalty), 3)
+    results = await asyncio.gather(*[t[2] for t in tasks], return_exceptions=True)
 
-    # Parse source credibility assessments
+    new_entries: list[dict[str, Any]] = []
+    tool_results_overall: list[dict[str, Any]] = []
     new_credibility: list[dict[str, Any]] = []
-    for sc in result.get("source_credibility", []):
-        if isinstance(sc, dict):
-            new_credibility.append(
-                SourceCredibility(
-                    source_url=sc.get("source_url", ""),
-                    source_title=sc.get("source_title", ""),
-                    cited_by_advocate=sc.get("cited_by", ""),
-                    credibility_score=float(sc.get("credibility_score", 0.5)),
-                    issues=sc.get("issues", []),
-                    verified=sc.get("verified", False),
-                ).model_dump()
-            )
+    missing_tests_overall = []
+    penalties = dict(s.uncertainty_penalties)
+    
+    events = []
 
-    # Record missing tests
-    missing_tests = result.get("missing_tests", [])
+    for (diag, skeptic_id, _), result in zip(tasks, results):
+        if isinstance(result, Exception):
+            logger.warning("skeptic_failed", skeptic_id=skeptic_id, diag=diag, error=str(result))
+            continue
+            
+        if not isinstance(result, dict):
+            result = {"raw": result}
 
-    entry = DebateEntry(
-        agent_role="skeptic",
-        agent_id="skeptic_main",
-        content=json.dumps(result, default=str),
-        round_number=s.current_round,
-        tool_calls=tool_results,
-    )
+        # Tools
+        tool_requests = result.get("tool_requests", [])
+        adv_tool_results = []
+        if tool_requests:
+            tool_outputs = await execute_tool_calls_batch(tool_requests) # This runs sequentially per skeptic, safe enough.
+            adv_tool_results = [t.model_dump() for t in tool_outputs]
+            tool_results_overall.extend(adv_tool_results)
 
-    events = [
-        {
+        # Penalties - specific to this diag
+        penalty = float(result.get("uncertainty_penalty", 0.0))
+        if penalty > 0:
+            current = penalties.get(diag, 0.0)
+            penalties[diag] = round(current + penalty, 3)
+
+        # Credibility
+        for sc in result.get("source_credibility", []):
+            if isinstance(sc, dict):
+                new_credibility.append(
+                    SourceCredibility(
+                        source_url=sc.get("source_url", ""),
+                        source_title=sc.get("source_title", ""),
+                        cited_by_advocate=diag,
+                        credibility_score=float(sc.get("credibility_score", 0.5)),
+                        issues=sc.get("issues", []),
+                        verified=sc.get("verified", False),
+                    ).model_dump()
+                )
+
+        # Missing tests
+        missing_tests_overall.extend(result.get("missing_tests", []))
+
+        # Create entry
+        entry = DebateEntry(
+            agent_role="skeptic",
+            agent_id=skeptic_id,
+            content=json.dumps(result, default=str),
+            round_number=s.current_round,
+            tool_calls=adv_tool_results,
+        )
+        new_entries.append(entry.model_dump())
+
+        events.append({
             "type": "skeptic_objection",
-            "penalties": new_penalties,
+            "target": diag,
+            "penalty": penalty,
             "contradictions": result.get("contradictions", []),
             "hallucination_flags": result.get("hallucination_flags", []),
-            "source_credibility_count": len(new_credibility),
-            "missing_tests": missing_tests,
+            "source_credibility_count": len(result.get("source_credibility", [])),
+            "missing_tests": result.get("missing_tests", []),
             "round": s.current_round,
             "timestamp": datetime.utcnow().isoformat(),
-        }
-    ]
+        })
 
     return {
         **state,
         "debate_transcript": [
             (e.model_dump() if isinstance(e, DebateEntry) else e)
             for e in s.debate_transcript
-        ] + [entry.model_dump()],
+        ] + new_entries,
         "uncertainty_penalties": penalties,
         "source_credibility": [
             (sc.model_dump() if isinstance(sc, SourceCredibility) else sc)
@@ -521,7 +561,7 @@ async def skeptic_node(state: dict[str, Any]) -> dict[str, Any]:
                 reason="Identified by skeptic",
                 urgency=Urgency.MEDIUM,
             ).model_dump()
-            for t in missing_tests
+            for t in missing_tests_overall
         ],
         "pending_events": state.get("pending_events", []) + events,
     }

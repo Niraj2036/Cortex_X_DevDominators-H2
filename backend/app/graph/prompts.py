@@ -23,9 +23,9 @@ from typing import Any
 
 # ── Max characters for variable-length sections ──────────────────────
 # ~4 chars per token, leave room for system prompt + completion
-_MAX_PATIENT_CHARS = 3000      # ~750 tokens
-_MAX_TRANSCRIPT_CHARS = 4000   # ~1000 tokens
-_MAX_HYPOTHESES_CHARS = 2000   # ~500 tokens
+_MAX_PATIENT_CHARS = 25000     # ~6250 tokens
+_MAX_TRANSCRIPT_CHARS = 15000  # ~3750 tokens
+_MAX_HYPOTHESES_CHARS = 5000   # ~1250 tokens
 _MAX_SECTION_CHARS = 1500      # ~375 tokens
 
 
@@ -142,19 +142,19 @@ def advocate_user_prompt(
 
 def skeptic_system_prompt() -> str:
     return (
-        "You are a rigorous medical skeptic.\n\n"
+        "You are a rigorous medical skeptic (Devil's Advocate).\n\n"
         "Mission:\n"
-        "1. IDENTIFY contradictions in advocate arguments.\n"
-        "2. DETECT hallucinated or unsupported claims.\n"
+        "1. IDENTIFY contradictions in the SPECIFIC advocate's argument you are critiquing.\n"
+        "2. DETECT hallucinated or unsupported claims for this hypothesis.\n"
         "3. VERIFY SOURCE CREDIBILITY — rate 0.0–1.0.\n"
-        "4. PENALISE weak evidence (uncertainty penalty 0.0–0.5).\n"
-        "5. DETECT missing clinical tests.\n"
+        "4. PENALISE weak evidence (uncertainty penalty 0.0–0.5) against this diagnosis.\n"
+        "5. DETECT missing clinical tests required to validate this hypothesis.\n"
         "6. Request tool calls to verify: literature_search, clinical_guidelines, pubmed_search\n\n"
         "Return ONLY valid JSON:\n"
-        '{"contradictions":[{"diagnosis":"...","issue":"..."}],'
-        '"hallucination_flags":[{"diagnosis":"...","claim":"...","reason":"..."}],'
-        '"source_credibility":[{"source_title":"...","cited_by":"...","credibility_score":0.5,"issues":[],"verified":false}],'
-        '"uncertainty_penalties":{"diagnosis":0.1},'
+        '{"contradictions":[{"issue":"..."}],'
+        '"hallucination_flags":[{"claim":"...","reason":"..."}],'
+        '"source_credibility":[{"source_title":"...","credibility_score":0.5,"issues":[],"verified":false}],'
+        '"uncertainty_penalty":0.1,'
         '"missing_tests":["test1"],'
         '"overall_assessment":"text",'
         '"tool_requests":[{"tool":"...","query":"..."}]}\n'
@@ -162,15 +162,17 @@ def skeptic_system_prompt() -> str:
 
 
 def skeptic_user_prompt(
-    hypotheses: list[dict[str, Any]],
+    target_diagnosis: str,
+    advocate_argument: dict[str, Any],
     transcript: list[dict[str, Any]],
     patient_data: dict[str, Any],
 ) -> str:
     return (
-        f"Hypotheses: {_compact(hypotheses, _MAX_HYPOTHESES_CHARS)}\n"
+        f"You are fiercely critiquing: {target_diagnosis}\n"
+        f"Advocate's Defense: {_compact(advocate_argument, _MAX_SECTION_CHARS)}\n"
         f"Patient: {_compact(patient_data, _MAX_PATIENT_CHARS)}\n"
-        f"Debate: {_compact_transcript(transcript, max_entries=6)}\n"
-        "Critique arguments. Verify sources. Assign penalties. Identify gaps."
+        f"Debate Context: {_compact_transcript(transcript, max_entries=4)}\n"
+        "Critique this specific argument aggressively. Verify sources. Assign penalty. Identify gaps."
     )
 
 
@@ -230,9 +232,10 @@ def inquisitor_system_prompt() -> str:
     return (
         "You are a clinical inquisitor assessing if missing evidence\n"
         "could materially change the leading diagnosis.\n\n"
-        "1. If critical data is missing, recommend halting.\n"
-        "2. Classify urgency: critical/high/medium/low.\n"
-        "3. Ask targeted follow-up questions.\n\n"
+        "1. CRITICAL: Before claiming any test/report is missing, YOU MUST CAREFULLY CHECK THE PATIENT DATA. Do NOT ask for tests that are already provided in the patient data!\n"
+        "2. If critical data is TRULY missing and absolutely required, recommend halting.\n"
+        "3. Classify urgency: critical/high/medium/low.\n"
+        "4. Ask targeted follow-up questions for the missing data.\n\n"
         "Return ONLY valid JSON:\n"
         '{"should_halt":false,'
         '"missing_data":[{"test_name":"...","reason":"...","urgency":"medium","impact":"..."}],'

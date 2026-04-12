@@ -41,6 +41,7 @@ from app.schemas.responses import (
 )
 from app.services.ocr_service import extract_from_file, merge_ocr_into_patient_data
 from app.services.report_service import build_diagnosis_response, build_halted_response
+from app.services.structuring_service import structure_patient_data
 
 logger = get_logger(__name__)
 
@@ -190,12 +191,15 @@ async def run_diagnosis(
         # Build initial state
         patient_dict = request.patient_data.model_dump()
 
+        # Structure the patient data via Gemini
+        structured_patient_data = await structure_patient_data(patient_dict)
+
         initial_state = state_to_dict(
             OmniState(
                 session_id=session_id,
                 request_id=rid,
                 phase=WorkflowPhase.INTAKE,
-                patient_data=patient_dict,
+                patient_data=structured_patient_data,
                 max_rounds=request.max_rounds,
             )
         )
@@ -230,6 +234,96 @@ async def run_diagnosis(
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logger.exception("unexpected_error", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+
+@router.post(
+    "/extract-files",
+    responses={
+        200: {"description": "Returns structured patient data extracted from files and text"},
+        400: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
+)
+async def extract_files(
+    files: list[UploadFile] = File(
+        [], # Optional
+        description="Upload PDFs and/or images",
+    ),
+    patient_text: str = Form(
+        "",
+        description="Paste all patient info here",
+    ),
+    file_labels: str = Form(
+        "",
+        description="Comma-separated label for each file",
+    ),
+):
+    """Extracts and structures patient data from files and text without running the debate."""
+    rid = generate_request_id()
+    request_id_ctx.set(rid)
+    session_id = uuid.uuid4().hex[:16]
+
+    logger.info(
+        "extract_files_start",
+        session_id=session_id,
+        file_count=len(files) if files else 0,
+        has_text=bool(patient_text),
+    )
+
+    try:
+        labels = [l.strip() for l in file_labels.split(",") if l.strip()] if file_labels else []
+        base_patient_data: dict[str, Any] = {}
+        if patient_text.strip():
+            base_patient_data["patient_description"] = patient_text.strip()
+
+        all_extractions: list[dict[str, Any]] = []
+
+        if files:
+            for i, file in enumerate(files):
+                content = await file.read()
+                if len(content) == 0:
+                    continue
+                if len(content) > 20 * 1024 * 1024:
+                    raise FileUploadError(f"File '{file.filename}' exceeds 20MB limit")
+                
+                label = labels[i] if i < len(labels) else ""
+                doc_type = _label_to_doc_type(label) if label else _guess_doc_type(file.filename or "")
+
+                extractions = await extract_from_file(
+                    file_bytes=content,
+                    filename=file.filename or "unknown",
+                    document_type=doc_type,
+                )
+                for ext in extractions:
+                    ext["_source_file"] = file.filename
+                    ext["_source_label"] = label or file.filename
+                all_extractions.extend(extractions)
+
+        merged_patient_data = merge_ocr_into_patient_data(
+            base_patient_data, all_extractions
+        )
+
+        if files:
+            merged_patient_data["uploaded_documents"] = [
+                {
+                    "filename": files[i].filename,
+                    "label": labels[i] if i < len(labels) else files[i].filename,
+                }
+                for i in range(len(files))
+            ]
+
+        # Skip Gemini here - WebSockets will handle it step-by-step
+        return {
+            "patient_data": merged_patient_data, 
+            "ocr_extractions": all_extractions,
+            "session_id": session_id
+        }
+
+    except FileUploadError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("extract_error", error=str(e))
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 
@@ -360,13 +454,26 @@ async def diagnose_with_files(
             extractions=len(all_extractions),
         )
 
-        # ── 5. Run diagnostic workflow ──────────────────────────
+        # ── 5. Gemini structuring — clean JSON with inferences ──
+        structured_patient_data = await structure_patient_data(
+            merged_patient_data,
+            ocr_extractions=all_extractions,
+        )
+
+        logger.info(
+            "patient_data_structured",
+            session_id=session_id,
+            has_demographics="demographics" in structured_patient_data,
+            test_count=len(structured_patient_data.get("test_results", {})),
+        )
+
+        # ── 6. Run diagnostic workflow ──────────────────────────
         initial_state = state_to_dict(
             OmniState(
                 session_id=session_id,
                 request_id=rid,
                 phase=WorkflowPhase.INTAKE,
-                patient_data=merged_patient_data,
+                patient_data=structured_patient_data,
                 ocr_extractions=all_extractions,
                 max_rounds=max_rounds,
             )

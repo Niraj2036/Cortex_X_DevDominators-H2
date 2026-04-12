@@ -507,6 +507,7 @@ async def gemini_ocr(
             logger.info("gemini_ocr_request", mime_type=mime_type, size_kb=len(file_bytes) // 1024)
             resp = await client.post(url, json=body)
     except (httpx.TimeoutException, httpx.ConnectError) as exc:
+        print ("exception,",exc)
         raise GeminiOCRError(
             f"Gemini request failed: {exc}",
             details={"error": str(exc)},
@@ -568,3 +569,93 @@ async def gemini_ocr_image(
         prompt=prompt,
         settings=settings,
     )
+
+
+async def gemini_text_json(
+    *,
+    system_prompt: str,
+    user_text: str,
+    settings: Settings | None = None,
+    temperature: float = 0.1,
+    max_output_tokens: int = 8192,
+) -> dict[str, Any]:
+    """
+    Call Gemini with a text-only prompt and return parsed JSON.
+
+    Unlike ``gemini_ocr`` which sends binary inline_data, this sends
+    pure text parts — ideal for structuring / reasoning tasks.
+
+    Returns a single dict (not a list).
+    """
+    cfg = settings or get_settings()
+
+    body = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": system_prompt},
+                    {"text": user_text},
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": max_output_tokens,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    url = _GEMINI_ENDPOINT.format(model=cfg.gemini_model, key=cfg.gemini_api_key)
+
+    try:
+        async with httpx.AsyncClient(timeout=cfg.llm_timeout) as client:
+            logger.info(
+                "gemini_text_json_request",
+                system_chars=len(system_prompt),
+                user_chars=len(user_text),
+            )
+            resp = await client.post(url, json=body)
+    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+        raise GeminiOCRError(
+            f"Gemini text request failed: {exc}",
+            details={"error": str(exc)},
+        )
+
+    if resp.status_code != 200:
+        raise GeminiOCRError(
+            f"Gemini returned {resp.status_code}",
+            details={"status": resp.status_code, "body": resp.text[:1000]},
+        )
+
+    data = resp.json()
+
+    try:
+        candidates = data.get("candidates", [])
+        if not candidates:
+            raise GeminiOCRError("No candidates in Gemini response")
+
+        raw_text = candidates[0]["content"]["parts"][0]["text"]
+
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            cleaned = "\n".join(lines)
+
+        parsed = json.loads(cleaned)
+
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list) and parsed:
+            return parsed[0] if isinstance(parsed[0], dict) else {"content": parsed}
+        return {"content": str(parsed)}
+
+    except (KeyError, IndexError, json.JSONDecodeError) as exc:
+        logger.warning("gemini_text_json_parse_failed", error=str(exc))
+        raw_text = ""
+        try:
+            raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError):
+            raw_text = str(data)
+        return {"content": raw_text, "parse_mode": "raw"}
+
