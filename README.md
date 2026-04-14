@@ -105,67 +105,78 @@ Currently, clinical AI tools fail because they are overconfident single-model sy
 ## 5. Complete Project Directory Structure
 
 ```text
-omni-cortex-x/                  # Root Monorepo Directory
+Cortex_X_DevDominators-H2/      # Root Monorepo Directory
 │
 ├── backend/                    # FASTAPI & LANGGRAPH ENGINE
-│   ├── .env                    # API Keys (OpenAI, Google, Anthropic, Tavily, Mongo)
+│   ├── .env                    # Environment variables (APIs, Configs)
+│   ├── pytest.ini              # Pytest configuration
 │   ├── requirements.txt        # Python dependencies
-│   └── app/
-│       ├── main.py             # FastAPI entry point & WebSocket connection handler
-│       ├── api/
-│       │   ├── routes.py       # REST endpoints (e.g., POST /upload for Vision OCR)
-│       │   └── websockets.py   # WebSocket streaming logic for LangGraph updates
-│       │
-│       ├── graph/              # LANGGRAPH ARCHITECTURE
-│       │   ├── state.py        # Defines the TypedDict for the shared deliberation graph
-│       │   └── workflow.py     # StateGraph compiler (connects nodes & conditional edges)
-│       │
-│       ├── agents/             # LANGGRAPH NODES (The AI Society)
-│       │   ├── __init__.py
-│       │   ├── triage.py       # Multi-model inference to extract hypotheses
-│       │   ├── cortex.py       # Evaluator logic (Checks math for >85% consensus)
-│       │   ├── advocates.py    # Logic & prompts for Cardiac, GI, Pulmonary agents
-│       │   ├── skeptic.py      # Devil's Advocate logic & uncertainty penalty math
-│       │   ├── simulator.py    # Counterfactual generator
-│       │   └── inquisitor.py   # Identifies missing information
-│       │
-│       ├── services/           # EXTERNAL API MANAGERS
-│       │   ├── vision_extractor.py # Gemini API logic to parse Images/PDFs to JSON
-│       │   ├── search_tool.py  # Tavily API integration for web research
-│       │   └── database.py     # MongoDB connection & Vector Search logic (MNEMOS)
-│       │
-│       └── models/             # Pydantic schemas (Ensures JSON data is strictly typed)
-│           └── schemas.py      # PatientInput, ActiveHypothesis, FinalVerdict schemas
+│   ├── app/
+│   │   ├── main.py             # FastAPI entry point & WebSocket connection handler
+│   │   ├── api/
+│   │   │   ├── atlas_routes.py     # MongoDB Vector endpoints
+│   │   │   ├── routes_diagnosis.py # REST endpoints for workflow ingestion
+│   │   │   └── websocket.py        # WebSocket streaming logic for LangGraph updates
+│   │   ├── core/               # INFRASTRUCTURE & SETTINGS
+│   │   │   ├── config.py       # Pydantic Settings
+│   │   │   ├── exceptions.py   # Global Custom Error Handling 
+│   │   │   ├── llm_client.py   # Wrapping logic for async LLMs 
+│   │   │   └── logging.py      # Structlog initialiser
+│   │   ├── db/
+│   │   │   └── mongodb.py      # Async Motor client initialization pool
+│   │   ├── graph/              # LANGGRAPH ARCHITECTURE
+│   │   │   ├── agents.py       # Combined agent nodes logic (Triage, Advocates, Skeptic, Scribe)
+│   │   │   ├── prompts.py      # Prompt constants for deterministic rendering
+│   │   │   ├── state.py        # Defines the TypedDict for the shared deliberation graph
+│   │   │   ├── tools.py        # Binds executable actions for agents
+│   │   │   └── workflow.py     # StateGraph compiler (connects nodes & conditional edges)
+│   │   ├── schemas/            # PYDANTIC SCHEMAS
+│   │   │   ├── requests.py     # Payload definitions
+│   │   │   └── responses.py    # Output payload formatting
+│   │   └── services/           # EXTERNAL API MANAGERS
+│   │       ├── atlas_service.py      # MongoDB connection & Vector Search logic
+│   │       ├── ocr_service.py        # Image/PDf parsing via Gemini
+│   │       ├── report_service.py     # Logic to format verdicts
+│   │       └── structuring_service.py# NLP string sanitization
+│   └── tests/                  # PYTEST SUITE
+│       ├── conftest.py
+│       ├── test_llm_client.py
+│       ├── test_tools.py
+│       └── test_workflow.py
 │
 ├── frontend/                   # NEXT.JS & REACT UI
-│   ├── .env.local              # Frontend config (Backend URL, etc.)
-│   ├── package.json
-│   ├── tailwind.config.ts
+│   ├── AGENTS.md               # Frontend Agent Doc mappings
+│   ├── package.json            # Node dependencies
+│   ├── tailwind.config.ts      # UI styling bounds
 │   └── src/
 │       ├── app/
-│       │   ├── layout.tsx      # Global layout & fonts
-│       │   ├── page.tsx        # Main Dashboard Page
-│       │   └── globals.css     # Tailwind imports
-│       │
+│       │   ├── globals.css     # Tailwind imports
+│       │   ├── layout.tsx      # Global React layout & fonts
+│       │   └── page.tsx        # Main routing dashboard
 │       ├── components/         # UI BUILDING BLOCKS
-│       │   ├── Ingestion/
-│       │   │   └── FileUploader.tsx    # Drag-and-drop for images, PDFs, text
+│       │   ├── AppShell.tsx    # Native Next Layout Wrapper
+│       │   ├── Chat/
+│       │   │   └── ChatView.tsx         # Unified stream component
 │       │   ├── Courtroom/
-│       │   │   ├── LiveFeed.tsx        # Terminal-style scrolling text of agent debate
-│       │   │   └── AgentBadge.tsx      # Visual indicators of who is speaking
-│       │   ├── Analytics/
-│       │   │   └── BeliefChart.tsx     # Recharts component for confidence scores
+│       │   │   ├── LiveCourtroom.tsx    # Agent sidebar and hook multiplex loop
+│       │   │   └── Triage.tsx           # Initial Hypotheses Generation component
+│       │   ├── Ingestion/
+│       │   │   ├── Dashboard.tsx        # UI for patient context & file dropzones
+│       │   │   └── VisionLayer.tsx      # OCR File processing state
+│       │   ├── Layout/
+│       │   │   └── Header.tsx           # Application navigation
 │       │   └── Verdict/
-│       │       ├── ConsensusDoc.tsx    # Green UI: Shows final diagnosis & dissenters
-│       │       └── UncertaintyWarning.tsx # Yellow UI: Prompts for missing data
-│       │
-│       ├── hooks/
-│       │   └── useDebateSocket.ts      # Custom React Hook to manage WebSocket state
-│       │
-│       └── lib/
-│           └── utils.ts        # Helper functions (date formatting, class merging)
+│       │       └── ConsensusDoc.tsx     # Final structured diagnostic report card
+│       ├── hooks/              # CUSTOM REACT HOOKS
+│       │   ├── useBackend.ts            # WebSockets connection and event handler
+│       │   ├── useDemoMode.ts           # Development simulation overrides
+│       │   └── useWebSocketChat.ts      # Raw string parsing stream
+│       ├── store/
+│       │   └── useCortexStore.ts        # Zustand global memory persistence
+│       └── types/
+│           └── types.ts                 # Full interface definitions
 │
-└── README.md                   # Hackathon Pitch & Setup Instructions
+└── README.md                   # Project Documentation
 ```
 
 ---
