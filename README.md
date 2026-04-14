@@ -8,28 +8,55 @@
 
 ## 1. Executive Summary
 
-Currently, clinical AI tools fail because they are overconfident single-model systems. They produce a single answer, cannot explain their reasoning, and lack the ability to say "I don't know." This contributes to the 12 million diagnostic errors occurring annually.
+Most clinical AI systems behave like single-shot answer engines: one model, one prediction, low transparency. That is risky in real diagnostic settings where missing data, uncertain findings, and conflicting evidence are common.
 
-**Omni_CortexX** solves this by treating medical diagnosis as a courtroom rather than a calculator. We deploy a society of specialized AI agents (powered by a diverse fleet of LLMs) that actively debate competing hypotheses, simulate counterfactual outcomes, cross-examine each other, and search the medical internet for real-world case precedents. The system enforces **epistemic humility**: it will explicitly refuse to diagnose and instead demand missing information if the agents cannot reach a mathematical consensus.
+**Omni_CortexX** is built as a multi-agent diagnostic courtroom, not a one-pass chatbot. A doctor can upload mixed clinical evidence (images, PDFs, and text history). We first convert all raw data into structured medical context using Gemini 2.5 Flash, then run a debate-based diagnosis protocol where multiple open-source LLMs independently reason, challenge each other, and iteratively refine hypotheses.
+
+The system is designed for:
+
+*   **High recall of possibilities:** Multiple models generate broad differential hypotheses.
+*   **Concurrent execution:** Ingestion and model calls are parallelized to reduce turnaround time.
+*   **Traceable reasoning:** Every debate round, score, penalty, and remark is logged.
+*   **Epistemic humility:** If critical data is missing or consensus quality is weak, the system halts and asks for more reports instead of forcing a diagnosis.
 
 ---
 
 ## 2. Unique Selling Propositions (USPs)
 
-*   **Multimodal Vision Ingestion:** Doctors don't type JSON. Omni_CortexX allows clinicians to drag-and-drop raw ECG images, PDFs of blood work, and typed clinical notes. We use the Gemini Vision API to instantly standardize this chaotic data into a clean, queryable JSON format.
-*   **Poly-Model Triage Engine:** Instead of relying on one model, we hit GPT-4, Claude 3.5 Sonnet, and Gemini simultaneously to generate the initial hypotheses, catching edge cases a single model would miss.
-*   **The Agentic Courtroom:** Agents don't just output text; they actively cross-examine each other's logic and use tool-calling (Tavily API) to cite real-time medical literature.
-*   **Epistemic Humility (The "I Don't Know" Feature):** The system is deliberately designed to block premature consensus. If uncertainty is too high, it issues an "Uncertainty Declaration" to the human doctor.
+*   **True Multimodal Intake from Clinicians:** Supports mixed uploads including ECG images, scanned PDFs, and rich patient text (history, symptoms, prior conditions, medications, etc.).
+*   **Gemini-First Clinical Structuring Layer:** Gemini 2.5 Flash is used twice in the ingestion pipeline: first to infer findings per file, then to normalize all findings into one consistent structured payload.
+*   **Open-Source Multi-Model Reasoning via Featherless:** Diagnosis generation runs on a fleet of open-source models instead of a single proprietary endpoint.
+*   **Concurrency-Aware LLM Scheduler:** Requests are queued and dispatched based on model size limits and key-level throughput constraints.
+*   **Courtroom-Style Iterative Deliberation:** Advocates, Skeptic, Inquisitor, Simulator, Scribe, and Cortex-X collaborate across multiple rounds with explicit scoring and elimination logic.
+*   **Fail-Safe by Design:** Missing critical data can pause the workflow and request additional reports before proceeding.
 
 ---
 
 ## 3. Detailed Architecture & User Flow
 
-### Phase 1: Multimodal Data Ingestion (The Vision Layer)
-**Trigger:** A clinician uploads a mix of data (ECG images, Blood Work PDFs, and text notes) to the React dashboard.
-**Action:** Instead of passing heavy, expensive images to the debating agents, the backend intercepts the files. The system uses the Gemini 1.5 Pro/Flash Vision API to read every single report, extract the medical inferences, and structure them into a standardized JSON array.
+### Phase 1: Multimodal Clinical Intake (Doctor Input Layer)
+**Trigger:** A clinician uploads any combination of:
 
-**Output Data Structure (The Global Input):**
+*   Medical images (for example ECG traces)
+*   PDFs/reports/lab documents
+*   Text fields (patient details, complaint timeline, history, etc.)
+
+**Design Goal:** Doctors should provide evidence in native clinical form, not manually structured JSON.
+
+### Phase 2: Gemini 2.5 Flash Inference + Structuring Layer
+This stage runs before the debate engine.
+
+**Step A: File-Level Inference**
+
+*   Each uploaded file is processed with Gemini 2.5 Flash.
+*   The model extracts a concise medical inference per artifact.
+
+**Step B: Unified Clinical Structuring**
+
+*   All file-level inferences + patient text are merged.
+*   Gemini 2.5 Flash is called again to produce one normalized structured representation.
+
+**Output (Global Input Payload):**
 ```json
 {
   "patient_text_summary": "Patient arrived in ED with chest pain radiating to the left arm...",
@@ -48,30 +75,92 @@ Currently, clinical AI tools fail because they are overconfident single-model sy
 }
 ```
 
-### Phase 2: Poly-Model Triage & Setup
-**Action:** The standardized JSON is sent concurrently to multiple LLMs (OpenAI, Anthropic, Google).
-**Result:** The system extracts unique diagnostic hypotheses (e.g., Cardiac, Pulmonary, GI).
-**Setup:** CORTEX (The Chief Justice) initializes a LangGraph state machine. It dynamically assigns an ADVOCATE agent to each identified hypothesis.
+### Phase 3: Featherless Multi-Model Hypothesis Generation
+Gemini's role ends after structuring. Then Featherless inference begins.
 
-### Phase 3: The Live Courtroom (Stateful Deliberation)
-**Action:** The React UI transitions to a real-time WebSockets feed. The debate begins:
-*   **Research:** Advocates pause to query the internet (Tavily API) and the institutional memory database (MongoDB Vector Search) for real-world case precedents matching the ingested reports.
-*   **Debate:** Advocates present their arguments to the Shared Deliberation Graph. They actively read the transcript and disagree with other advocates if evidence contradicts them.
-*   **Cross-Examination:** The SKEPTIC (Devil's Advocate) attacks the advocates, finds logical flaws, and assigns mathematical "Uncertainty Penalties" to weak arguments.
-*   **Simulation:** The SIMULATOR runs in the background, projecting "What if?" scenarios (e.g., "If we administer Heparin now, what is the bleeding risk?").
+**Model Fleet (Open Source):**
 
-### Phase 4: The Information Gap Check
-**Action:** The INQUISITOR agent monitors the debate. If the SKEPTIC successfully blocks an argument because data is missing (e.g., prior imaging is absent), the INQUISITOR calculates the diagnostic value of that missing data.
-**Result:** It halts the debate and triggers a UI prompt to the clinician: *"Critical Data Missing: Please upload prior chest X-ray to rule out dissection."*
+*   `deepseek-ai/DeepSeek-V3-0324`
+*   `google/gemma-4-31B-it`
+*   `Qwen/Qwen2.5-72B-Instruct`
+*   `deepseek-ai/DeepSeek-V3.2`
+*   `Qwen/Qwen3-32B`
+*   `google/gemma-4-26B-A4B`
 
-### Phase 5: Verdict & Documentation
-**Action:** CORTEX continuously runs a weighted voting algorithm (Advocate Confidence - Skeptic Uncertainty = Adjusted Score).
-*   **Scenario A (Supermajority Reached):** If a hypothesis crosses the threshold (e.g., >85%), the SCRIBE generates a Consensus Certificate. It logs the winning diagnosis, the confidence band, and explicitly lists the dissenting agents' opinions for the clinician to review.
-*   **Scenario B (Deadlock):** If the score remains too low, CORTEX issues an Uncertainty Declaration, explaining exactly why the AI society cannot safely diagnose the patient, handing control back to the human.
+**Generation Strategy:**
 
-### Phase 6: Post-Case Learning
-**Action:** After the clinician finalizes the case, the entire transcript, inputs, and actual patient outcome are stored in the database.
-**Result:** MNEMOS (Institutional Memory) updates the MongoDB Atlas Vector embeddings. In future cases, Advocates will retrieve this case to improve their reasoning, making the system measurably smarter over time.
+*   The same structured payload is sent to each model **twice**.
+*   Responses are deduplicated to collect **unique diagnostic hypotheses**.
+
+### Phase 4: Concurrency and Throughput Control
+Because Featherless throughput depends on model size, the backend uses a queue-based dispatcher.
+
+**Constraint Policy:**
+
+*   Models **below 32B**: up to 2 concurrent requests per key.
+*   Models **32B and above**: 1 concurrent request per key.
+
+**Execution Pattern:**
+
+*   4 Featherless API keys are used.
+*   Independent workers push LLM tasks into a central queue.
+*   The scheduler checks model-size class and key availability.
+*   Requests are dispatched in eligible batches to maximize concurrency without violating limits.
+
+### Phase 5: Courtroom Orchestration (LangGraph Deliberation)
+After unique hypotheses are created, CORTEX-X (orchestrator) assigns one ADVOCATE per hypothesis.
+
+**Round Structure (2-3 rounds typical, max 5):**
+
+*   Each advocate builds the strongest case concurrently.
+*   Tool access includes Google Search API, Wikipedia, and Tavily.
+*   Institutional memory retrieval is planned but not active in the current implementation.
+
+### Phase 6: Skeptic, Inquisitor, and Peer Review Logic
+**SKEPTIC:**
+
+*   Challenges weak or unsupported claims.
+*   Assigns uncertainty penalties and gives remarks.
+
+**INQUISITOR:**
+
+*   Detects missing data requirements raised during challenge.
+*   Checks whether missing evidence is critical.
+*   If critical and unavailable, halts debate and asks clinician for more reports.
+
+**Peer Advocate Evaluation:**
+
+*   Advocates evaluate other advocates' cases.
+*   Each case receives peer scores + remarks.
+*   Peer score is averaged to estimate case robustness.
+
+### Phase 7: Elimination, Refinement, and Consensus Search
+CORTEX-X compares each case against peer consensus.
+
+*   Cases with significantly weaker support are discarded for the next round.
+*   Surviving advocates receive prior remarks and context to improve arguments.
+*   Loop continues until one of the following:
+    *   Convergence before 5 rounds
+    *   Maximum round cap reached
+    *   Debate halted due to critical missing data
+
+### Phase 8: Simulation Gate + Final Decision
+Before final recommendation, the SIMULATOR runs forward-looking checks on the leading diagnosis/treatment trajectory.
+
+*   If projected outcome risk is acceptable, consensus can be approved.
+*   If concerns remain, the orchestrator can continue deliberation or decline confident diagnosis.
+
+### Phase 9: Continuous Documentation and Storage
+SCRIBE records the full case timeline in real time:
+
+*   hypotheses,
+*   arguments,
+*   penalties,
+*   peer remarks,
+*   round-by-round score evolution,
+*   final decision state.
+
+Artifacts are persisted to MongoDB Atlas Vector Database for auditability and future retrieval workflows.
 
 ---
 
@@ -80,25 +169,27 @@ Currently, clinical AI tools fail because they are overconfident single-model sy
 **Frontend (The Command Center):**
 *   **React.js / Next.js** (App Router)
 *   **Tailwind CSS** (for a clinical, clean UI)
-*   **WebSockets** (Socket.io) for real-time debate streaming.
-*   **Recharts** for dynamic data visualization.
+*   **WebSockets** for real-time debate streaming.
 
 **Backend (The Agent Engine):**
-*   **Python / FastAPI** (Chosen for native async support, critical for long-running LLM calls).
-*   **LangGraph** (Crucial for managing the cyclic, stateful multi-agent debate).
-*   **LangChain** (Wraps LLM APIs and equips agents with tools).
+*   **Python / FastAPI** for async APIs, ingestion, and orchestration endpoints
+*   **LangGraph** for cyclical multi-agent state transitions
+*   **Queue-based LLM dispatcher** for concurrency-safe Featherless scheduling
 
-**AI & LLM Fleet:**
-*   **Vision Ingestion:** Gemini 1.5 Pro / Flash (Best-in-class for medical image/PDF OCR).
-*   **The Advocates/Skeptic:** GPT-4o and Claude 3.5 Sonnet (High reasoning capabilities).
-*   **Orchestration (CORTEX/Scribe):** Llama-3 (via Groq) or Gemini Flash for fast, cheap state routing.
+**AI Pipeline:**
+*   **Ingestion + Structuring:** Gemini 2.5 Flash (Gemini API)
+*   **Diagnostic Generation:** Featherless AI with 6 open-source LLMs (listed above)
+*   **Debate Roles:** Advocate, Skeptic, Inquisitor, Simulator, Scribe, Cortex-X
 
 **Database & Memory:**
-*   **MongoDB Atlas** (Stores patient sessions and JSON reports using motor async Python driver).
-*   **MongoDB Atlas Vector Search** (Powers MNEMOS to retrieve past cases for RAG).
+*   **MongoDB Atlas** for session/case persistence
+*   **MongoDB Atlas Vector Database** for transcript and reasoning artifact storage
+*   **Institutional memory retrieval:** planned, not currently enabled
 
-**External Tooling:**
-*   **Tavily Search API** (Grants Advocates internet access for live medical research).
+**Research Tools Available to Advocates:**
+*   **Google Search API**
+*   **Wikipedia**
+*   **Tavily API**
 
 ---
 
@@ -178,12 +269,3 @@ Cortex_X_DevDominators-H2/      # Root Monorepo Directory
 │
 └── README.md                   # Project Documentation
 ```
-
----
-
-## 6. Recommended Workflow Execution
-
-1.  **Backend Initialization:** Start by setting up the `backend/app/models/schemas.py` and `backend/app/services/vision_extractor.py`. Prove that you can upload a dummy PDF/Image and get your structured JSON back using Gemini.
-2.  **State Machine:** Build the `state.py` and `workflow.py`. Start with dummy agents (simple Python functions that just return hardcoded strings) to ensure LangGraph routes properly from Advocate -> Skeptic -> Cortex.
-3.  **Frontend Sockets:** Build the Next.js UI and establish the WebSocket connection. Stream the dummy text to the `LiveFeed.tsx` component.
-4.  **Inject Real AI:** Once the pipes are connected, replace the dummy agent functions with actual LangChain LLM calls.
