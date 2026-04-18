@@ -32,6 +32,24 @@ async def init_db() -> None:
                 logger.info("'cases' collection already exists - ready for Vector Search Index.")
             else:
                 logger.warning(f"Note on collection creation: {coll_err}")
+                
+        try:
+            await db.create_collection("sessions")
+            logger.info("Created 'sessions' collection explicitly.")
+        except Exception as coll_err:
+            if "already exists" in str(coll_err).lower() or "CollectionExists" in str(coll_err) or "NamespaceExists" in str(coll_err):
+                pass
+            else:
+                logger.warning(f"Note on sessions collection creation: {coll_err}")
+                
+        try:
+            await db.create_collection("diagnoses")
+            logger.info("Created 'diagnoses' collection explicitly.")
+        except Exception as coll_err:
+            if "already exists" in str(coll_err).lower() or "CollectionExists" in str(coll_err) or "NamespaceExists" in str(coll_err):
+                pass
+            else:
+                logger.warning(f"Note on diagnoses collection creation: {coll_err}")
 
         logger.info("Successfully connected to MongoDB Atlas.")
     except Exception as e:

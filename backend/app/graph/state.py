@@ -61,6 +61,7 @@ class DebateEntry(BaseModel):
 
     agent_role: str
     agent_id: str
+    agent_name: str | None = None
     content: str
     round_number: int
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())

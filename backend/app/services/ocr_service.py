@@ -19,6 +19,11 @@ import mimetypes
 from pathlib import Path
 from typing import Any
 
+try:
+    import magic
+except ImportError:
+    magic = None
+
 from app.core.exceptions import FileUploadError, OCRParsingError
 from app.core.llm_client import gemini_ocr, gemini_ocr_image
 from app.core.logging import get_logger
@@ -67,7 +72,17 @@ _DOC_PROMPTS: dict[str, str] = {
 
 
 def _detect_mime(filename: str, content: bytes) -> str:
-    """Detect MIME type from filename, falling back to content sniffing."""
+    """Detect MIME type broadly, falling back to python-magic if mimetypes fails."""
+    # 1. Broadly try python-magic if it exists
+    if magic:
+        try:
+            mime = magic.from_buffer(content, mime=True)
+            if mime and mime in _SUPPORTED_MIMES:
+                return mime
+        except Exception:
+            pass
+
+    # 2. Try standard mimetypes
     mime, _ = mimetypes.guess_type(filename)
     if mime and mime in _SUPPORTED_MIMES:
         return mime
@@ -145,10 +160,12 @@ async def extract_from_file(
         )
 
     if not results:
-        raise OCRParsingError(
-            "Gemini returned empty extraction",
-            details={"filename": filename},
+        logger.warning(
+            "gemini_returned_empty_extraction",
+            filename=filename,
+            reason="Gemini found no extractable clinical content."
         )
+        return [{"content": "No extractable clinical data found by Gemini.", "status": "empty_extraction"}]
 
     logger.info(
         "ocr_extraction_complete",

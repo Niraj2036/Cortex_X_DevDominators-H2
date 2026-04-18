@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useState, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
 import { motion } from "framer-motion";
 import {
@@ -20,80 +20,99 @@ import { useDemoMode } from "@/hooks/useDemoMode";
 
 // ─── Recent Cases Sidebar ───────────────────────────────────────────
 
-const RECENT_CASES = [
-  {
-    id: "#4821",
-    diagnosis: "Acute MI (STEMI)",
-    confidence: 92,
-    status: "complete",
-    time: "2h ago",
-  },
-  {
-    id: "#4820",
-    diagnosis: "Pulmonary Embolism",
-    confidence: 87,
-    status: "complete",
-    time: "5h ago",
-  },
-  {
-    id: "#4819",
-    diagnosis: "Pneumothorax",
-    confidence: 78,
-    status: "halted",
-    time: "1d ago",
-  },
-];
-
 function RecentCases() {
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const setSessionId = useCortexStore((s) => s.setSessionId);
+  const setDebateMessages = useCortexStore((s) => s.setDebateMessages);
+  const setPhase = useCortexStore((s) => s.setPhase);
+
+  useEffect(() => {
+    fetch("http://localhost:8000/api/v1/sessions/recent")
+      .then((res) => res.json())
+      .then((data) => {
+        setSessions(data.sessions || []);
+        setLoading(false);
+      })
+      .catch((err) => {
+        console.error("Failed to fetch recent sessions:", err);
+        setLoading(false);
+      });
+  }, []);
+
+  const handleSessionClick = async (id: string) => {
+    try {
+      const res = await fetch(`http://localhost:8000/api/v1/sessions/${id}`);
+      if (!res.ok) throw new Error("Failed to fetch session");
+      const sessionData = await res.json();
+
+      setSessionId(sessionData.session_id);
+      if (sessionData.messages) {
+        setDebateMessages(sessionData.messages);
+      }
+      setPhase("COURTROOM");
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-3">
       <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
         Recent Cases
       </h3>
-      {RECENT_CASES.map((c) => (
-        <motion.div
-          key={c.id}
-          whileHover={{ x: 4 }}
-          className="cursor-pointer rounded-xl border border-slate-800/60 bg-slate-900/60 p-4 transition-colors hover:border-slate-700/60 hover:bg-slate-800/40"
-        >
-          <div className="flex items-center justify-between">
-            <span className="font-mono text-sm font-semibold text-slate-300">
-              Patient {c.id}
-            </span>
-            <span
-              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
-                c.status === "complete"
-                  ? "bg-emerald-500/10 text-emerald-400"
-                  : "bg-amber-500/10 text-amber-400"
-              }`}
-            >
-              {c.status === "complete" ? (
-                <CheckCircle2 className="h-3 w-3" />
-              ) : (
-                <AlertCircle className="h-3 w-3" />
-              )}
-              {c.status}
-            </span>
-          </div>
-          <p className="mt-1 text-sm text-slate-400">{c.diagnosis}</p>
-          <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
-            <span>{c.confidence}% confidence</span>
-            <span className="flex items-center gap-1">
-              <Clock className="h-3 w-3" />
-              {c.time}
-            </span>
-          </div>
-          {/* Confidence bar */}
-          <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-slate-800">
-            <div
-              className={`h-full rounded-full ${
-                c.status === "complete" ? "bg-emerald-500" : "bg-amber-500"
-              }`}
-              style={{ width: `${c.confidence}%` }}
-            />
-          </div>
-        </motion.div>
-      ))}
+      {loading && <div className="text-xs text-slate-500">Loading cases...</div>}
+      {!loading && sessions.length === 0 && (
+        <div className="text-xs text-slate-500">No recent cases available.</div>
+      )}
+      {sessions.map((c) => {
+        // Create a short display ID (first 6 chars of UUID for neatness)
+        const displayId = c.id.substring(0, 6).toUpperCase();
+        // Extract a nicer time if it's an ISO string
+        let displayTime = c.time;
+        if (displayTime && displayTime.includes("T")) {
+            const d = new Date(displayTime);
+            displayTime = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + " " + d.toLocaleDateString();
+        }
+
+        return (
+          <motion.div
+            key={c.id}
+            onClick={() => handleSessionClick(c.id)}
+            whileHover={{ x: 4 }}
+            className="cursor-pointer rounded-xl border border-slate-800/60 bg-slate-900/60 p-4 transition-colors hover:border-slate-700/60 hover:bg-slate-800/40"
+          >
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-sm font-semibold text-slate-300">
+                Patient #{displayId}
+              </span>
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                  c.status === "complete"
+                    ? "bg-emerald-500/10 text-emerald-400"
+                    : "bg-amber-500/10 text-amber-400"
+                }`}
+              >
+                {c.status === "complete" ? (
+                  <CheckCircle2 className="h-3 w-3" />
+                ) : (
+                  <AlertCircle className="h-3 w-3" />
+                )}
+                {c.status}
+              </span>
+            </div>
+            <p className="mt-1 text-sm text-slate-400">{c.diagnosis}</p>
+            <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
+              {c.confidence > 0 && <span>{c.confidence}% confidence</span>}
+              <span className="flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                {displayTime}
+              </span>
+            </div>
+          </motion.div>
+        );
+      })}
     </div>
   );
 }

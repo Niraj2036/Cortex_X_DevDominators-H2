@@ -42,6 +42,9 @@ from app.schemas.responses import (
 from app.services.ocr_service import extract_from_file, merge_ocr_into_patient_data
 from app.services.report_service import build_diagnosis_response, build_halted_response
 from app.services.structuring_service import structure_patient_data
+from app.db.mongodb import get_db
+from app.services.memory_service import save_session, save_diagnosis
+import asyncio
 
 logger = get_logger(__name__)
 
@@ -86,6 +89,56 @@ async def readiness_check() -> ReadinessResponse:
     all_ready = all(checks.values())
 
     return ReadinessResponse(ready=all_ready, checks=checks)
+
+# ── Recent Sessions ─────────────────────────────────────────────────
+
+@router.get("/sessions/recent")
+async def get_recent_sessions(limit: int = 10):
+    """Retrieve recent sessions from the database."""
+    db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+        
+    try:
+        cursor = db["sessions"].find({}, {"messages": 0}).sort("created_at", -1).limit(limit)
+        sessions = await cursor.to_list(length=limit)
+        
+        # We optionally format this for the UI display
+        formatted = []
+        for s in sessions:
+            # check if there's a diagnosis
+            diag = await db["diagnoses"].find_one({"session_id": s["session_id"]})
+            formatted.append({
+                "id": s["session_id"],
+                "diagnosis": diag["verdict"] if diag else "Pending...",
+                "confidence": 0, # not fully extracted at root, fallback to 0
+                "status": "complete" if diag else "in_progress",
+                "time": s.get("created_at", "Unknown")
+            })
+        return {"sessions": formatted}
+    except Exception as e:
+        logger.error(f"Failed to fetch recent sessions: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch recent sessions")
+
+@router.get("/sessions/{session_id}")
+async def get_session(session_id: str):
+    """Retrieve a complete session including its chat history."""
+    db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+        
+    try:
+        session = await db["sessions"].find_one({"session_id": session_id})
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+            
+        session["_id"] = str(session["_id"])
+        return session
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch session")
 
 
 # ── File Upload (OCR) ───────────────────────────────────────────────
@@ -220,6 +273,17 @@ async def run_diagnosis(
             status=response.status,
             rounds=response.debate_rounds,
         )
+
+        asyncio.create_task(save_session(
+            session_id, 
+            structured_patient_data, 
+            [e.model_dump() if hasattr(e, "model_dump") else e for e in final_state.debate_transcript]
+        ))
+        asyncio.create_task(save_diagnosis(
+            session_id, 
+            structured_patient_data, 
+            response.primary_diagnosis if response.status != "halted" else f"Halted: {response.halt_reason}"
+        ))
 
         return response
 
@@ -491,6 +555,17 @@ async def diagnose_with_files(
             status=response.status,
             rounds=response.debate_rounds,
         )
+
+        asyncio.create_task(save_session(
+            session_id, 
+            structured_patient_data, 
+            [e.model_dump() if hasattr(e, "model_dump") else e for e in final_state.debate_transcript]
+        ))
+        asyncio.create_task(save_diagnosis(
+            session_id, 
+            structured_patient_data, 
+            response.primary_diagnosis if response.status != "halted" else f"Halted: {response.halt_reason}"
+        ))
 
         return response
 

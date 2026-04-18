@@ -380,6 +380,7 @@ async def advocate_round_node(state: dict[str, Any]) -> dict[str, Any]:
         entry = DebateEntry(
             agent_role="advocate",
             agent_id=result["agent_id"],
+            agent_name=f"{result['diagnosis']} Advocate",
             content=json.dumps(response, default=str),
             round_number=s.current_round,
             tool_calls=result.get("tool_results", []),
@@ -524,6 +525,7 @@ async def skeptic_node(state: dict[str, Any]) -> dict[str, Any]:
         entry = DebateEntry(
             agent_role="skeptic",
             agent_id=skeptic_id,
+            agent_name=f"{diag} Skeptic",
             content=json.dumps(result, default=str),
             round_number=s.current_round,
             tool_calls=adv_tool_results,
@@ -833,8 +835,13 @@ async def cortex_node(state: dict[str, Any]) -> dict[str, Any]:
         penalty = s.uncertainty_penalties.get(diag, 0.0)
         adjusted[diag] = round(raw - penalty, 3)
 
-    # Check if any score exceeds threshold
-    consensus_reached = any(v >= settings.consensus_threshold for v in adjusted.values())
+    # Determine consensus: top score significantly higher than average
+    consensus_reached = False
+    if adjusted:
+        avg_adjusted = sum(adjusted.values()) / len(adjusted)
+        top_score = max(adjusted.values())
+        if top_score - avg_adjusted >= 0.15:
+            consensus_reached = True
     at_max_rounds = s.current_round >= s.max_rounds
 
     # ── Advocate elimination logic ───────────────────────────────
@@ -845,10 +852,6 @@ async def cortex_node(state: dict[str, Any]) -> dict[str, Any]:
         scores = list(advocate_scores.values())
         overall_mean = sum(scores) / len(scores) if scores else 0
 
-        # Advocates above the mean
-        above_mean = [s for s in scores if s >= overall_mean]
-        avg_high = sum(above_mean) / len(above_mean) if above_mean else overall_mean
-
         # Sort advocates by score ascending to eliminate weakest first
         sorted_advocates = sorted(advocate_scores.items(), key=lambda x: x[1])
 
@@ -858,15 +861,17 @@ async def cortex_node(state: dict[str, Any]) -> dict[str, Any]:
                 break
             if agent_id in s.eliminated_advocates:
                 continue
-            diff = avg_high - score
-            if diff > 2.0:  # elimination threshold
+            
+            # Eliminate if significantly lower than average (e.g., > 1.5 pts worse)
+            diff = overall_mean - score
+            if diff >= 1.5:
                 newly_eliminated.append(agent_id)
                 alive_count -= 1
                 logger.info(
                     "advocate_eliminated",
                     agent_id=agent_id,
                     score=score,
-                    avg_high=avg_high,
+                    overall_mean=overall_mean,
                     diff=diff,
                 )
 

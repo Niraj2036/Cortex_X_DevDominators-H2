@@ -29,6 +29,7 @@ from app.core.logging import generate_request_id, get_logger, request_id_ctx
 from app.graph.state import OmniState, WorkflowPhase, state_to_dict
 from app.graph.workflow import compile_workflow
 from app.services.structuring_service import structure_patient_data
+from app.services.memory_service import save_session, save_diagnosis
 
 logger = get_logger(__name__)
 
@@ -376,6 +377,7 @@ async def websocket_diagnosis(ws: WebSocket) -> None:
     session_id = uuid.uuid4().hex[:16]
 
     logger.info("ws_connected", session_id=session_id)
+    messages_history = []  # Added to track all messages for memory layer
 
     try:
         # ── 1. Receive initial payload ───────────────────────────
@@ -411,20 +413,19 @@ async def websocket_diagnosis(ws: WebSocket) -> None:
         )
 
         gemini_info = _AGENT_DISPLAY["gemini"]
-        await _safe_send(
-            ws,
-            {
-                "type": "chat_message",
-                "agent_role": "gemini",
-                "agent_id": "gemini",
-                "agent_name": gemini_info["name"],
-                "agent_emoji": gemini_info["emoji"],
-                "agent_color": gemini_info["color"],
-                "content": "Analyzing and structuring the patient data...",
-                "timestamp": _ts(),
-                "session_id": session_id,
-            },
-        )
+        gemini_msg = {
+            "type": "chat_message",
+            "agent_role": "gemini",
+            "agent_id": "gemini",
+            "agent_name": gemini_info["name"],
+            "agent_emoji": gemini_info["emoji"],
+            "agent_color": gemini_info["color"],
+            "content": "Analyzing and structuring the patient data...",
+            "timestamp": _ts(),
+            "session_id": session_id,
+        }
+        await _safe_send(ws, gemini_msg)
+        messages_history.append(gemini_msg)
 
         structured_patient_data = await structure_patient_data(raw_patient_dict, ocr_extractions)
 
@@ -439,20 +440,19 @@ async def websocket_diagnosis(ws: WebSocket) -> None:
             ws,
             _typing_indicator("gemini", "Gemini Structuring", False, session_id),
         )
-        await _safe_send(
-            ws,
-            {
-                "type": "chat_message",
-                "agent_role": "gemini",
-                "agent_id": "gemini",
-                "agent_name": gemini_info["name"],
-                "agent_emoji": gemini_info["emoji"],
-                "agent_color": gemini_info["color"],
-                "content": "\n".join(struct_lines),
-                "timestamp": _ts(),
-                "session_id": session_id,
-            },
-        )
+        gemini_msg2 = {
+            "type": "chat_message",
+            "agent_role": "gemini",
+            "agent_id": "gemini",
+            "agent_name": gemini_info["name"],
+            "agent_emoji": gemini_info["emoji"],
+            "agent_color": gemini_info["color"],
+            "content": "\n".join(struct_lines),
+            "timestamp": _ts(),
+            "session_id": session_id,
+        }
+        await _safe_send(ws, gemini_msg2)
+        messages_history.append(gemini_msg2)
 
         # ── 3. Build initial state ───────────────────────────────
         initial_state = state_to_dict(
@@ -482,6 +482,7 @@ async def websocket_diagnosis(ws: WebSocket) -> None:
         }
 
         transcript_buffer = []
+        final_verdict = "Diagnosis not reached"
 
         async for chunk in workflow.astream(initial_state):
             for node_name, node_state in chunk.items():
@@ -519,6 +520,7 @@ async def websocket_diagnosis(ws: WebSocket) -> None:
                         chat_msg = _transcript_entry_to_chat(entry, session_id)
                         if chat_msg:
                             await _safe_send(ws, chat_msg)
+                            messages_history.append(chat_msg)
                             
                     transcript_buffer = []
                     sent_transcript_count = len(transcript)
@@ -528,6 +530,7 @@ async def websocket_diagnosis(ws: WebSocket) -> None:
                         chat_msg = _transcript_entry_to_chat(entry, session_id)
                         if chat_msg:
                             await _safe_send(ws, chat_msg)
+                            messages_history.append(chat_msg)
                     sent_transcript_count = len(transcript)
 
                 # ── B) Convert pending events to chat ────────────
@@ -541,6 +544,15 @@ async def websocket_diagnosis(ws: WebSocket) -> None:
                     chat_msg = _event_to_chat(event, session_id)
                     if chat_msg:
                         await _safe_send(ws, chat_msg)
+                        messages_history.append(chat_msg)
+                        # Extract final verdict if available
+                        if chat_msg.get("agent_role") == "scribe" and "Primary Diagnosis:" in chat_msg.get("content", ""):
+                            # Parse out the primary diagnosis
+                            lines = chat_msg["content"].split("\n")
+                            for line in lines:
+                                if line.startswith("Primary Diagnosis:"):
+                                    final_verdict = line.split(":", 1)[1].strip()
+                        
                 sent_events_count = len(events)
 
                 # ── C) Send typing indicator for NEXT node ───────
@@ -561,10 +573,19 @@ async def websocket_diagnosis(ws: WebSocket) -> None:
                 for ns in chunk.values():
                     if isinstance(ns, dict):
                         ns["pending_events"] = []
+                        if ns.get("phase") == "halted":
+                            final_verdict = f"Halted: {ns.get('halt_reason', 'Critical data missing')}"
 
         # ── 5. Send completion ───────────────────────────────────
-        await _safe_send(ws, _system_chat("Diagnostic session complete.", session_id))
+        completion_msg = _system_chat("Diagnostic session complete.", session_id)
+        await _safe_send(ws, completion_msg)
+        messages_history.append(completion_msg)
         await _safe_send(ws, {"type": "complete", "session_id": session_id})
+        
+        # Build memory records asynchronously without blocking the loop entirely here
+        # It handles DB insertion + Gemini embedding
+        asyncio.create_task(save_session(session_id, structured_patient_data, messages_history))
+        asyncio.create_task(save_diagnosis(session_id, structured_patient_data, final_verdict))
 
         logger.info("ws_workflow_complete", session_id=session_id)
 

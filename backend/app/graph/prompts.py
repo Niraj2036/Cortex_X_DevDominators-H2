@@ -324,8 +324,8 @@ def scribe_system_prompt() -> str:
         "supporting/contradictory evidence, missing investigations, "
         "recommended tests, emergency flag, narrative summary.\n\n"
         "Return ONLY valid JSON:\n"
-        '{"primary_diagnosis":"...","confidence_pct":0,'
-        '"differential_list":[{"diagnosis":"...","confidence_pct":0}],'
+        '{"primary_diagnosis":"...","confidence_pct":95,'
+        '"differential_list":[{"diagnosis":"...","confidence_pct":30}],'
         '"supporting_evidence":["..."],"contradictory_evidence":["..."],'
         '"missing_investigations":["..."],"recommended_next_tests":["..."],'
         '"emergency_escalation":false,"summary":"narrative"}\n'

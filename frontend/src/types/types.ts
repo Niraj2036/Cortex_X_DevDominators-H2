@@ -25,6 +25,8 @@ export interface Hypothesis {
 export interface DebateMessage {
   agent_role: string;
   agent_id: string;
+  agent_name?: string;
+  agent_emoji?: string;
   content: string;
   round_number: number;
   timestamp: string;
